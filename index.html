@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>8-Bit Rhythm Hero - Final Edition</title>
+    <style>
+        body { 
+            background: #111; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            height: 100vh; 
+            margin: 0; 
+            color: #fff; 
+            font-family: 'Courier New', Courier, monospace; 
+            overflow: hidden;
+        }
+        .game-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .info { 
+            margin-bottom: 10px; 
+            text-align: center; 
+            width: 400px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+        }
+        canvas { 
+            border: 4px solid #fff; 
+            background: #000; 
+            box-shadow: 0 0 30px rgba(255,255,255,0.1); 
+            image-rendering: pixelated; 
+            cursor: pointer; 
+        }
+        #score { font-size: 20px; color: #00ff00; font-weight: bold;}
+        .credits {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #666;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .credits span { color: #ffcc00; font-weight: bold; }
+        .credits .collab { color: #888; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div class="info">
+    <div style="color: #ffcc00; font-weight: bold; font-size: 20px;">8-BIT RHYTHM</div>
+    <div id="score">SCORE: 0</div>
+</div>
+
+<div class="game-container">
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+    <div class="credits">
+        Created by <span>LJP</span> 
+        <span class="collab">| Collaborated with Gemini</span>
+    </div>
+</div>
+
+<script>
+/**
+ * 配置與狀態
+ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreElement = document.getElementById('score');
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+let gameState = 'START'; // START, PLAYING, RESULT
+let score = 0;
+let notes = [];
+let effects = [];
+let activeLanes = [false, false, false, false]; // 用於按鍵視覺回饋
+let totalHits = { PERFECT: 0, GREAT: 0, GOOD: 0, MISS: 0 };
+
+const lanes = [60, 150, 240, 330];
+const keys = ['d', 'f', 'j', 'k'];
+const TARGET_Y = 500;
+const NOTE_SPEED = 5; 
+
+const JUDGEMENT = {
+    PERFECT: { range: 25, score: 300, color: '#ffcc00', text: 'PERFECT' },
+    GREAT:   { range: 50, score: 100, color: '#00ffff', text: 'GREAT'   },
+    GOOD:    { range: 80, score: 50,  color: '#ffffff', text: 'GOOD'    },
+    MISS:    { color: '#ff0000', text: 'MISS' }
+};
+
+/**
+ * 音訊系統
+ */
+function play8BitNote(freq, duration, type = 'square') {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+/**
+ * 繪製工具
+ */
+function drawText(text, y, size, color, glow = false) {
+    ctx.fillStyle = color;
+    ctx.font = `bold ${size}px 'Courier New', monospace`;
+    ctx.textAlign = "center";
+    if(glow) {
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = color;
+    }
+    ctx.fillText(text, canvas.width / 2, y);
+    ctx.shadowBlur = 0;
+}
+
+/**
+ * 遊戲邏輯
+ */
+function spawnNote() {
+    if(gameState !== 'PLAYING') return;
+    notes.push({ lane: Math.floor(Math.random() * 4), y: -30, hit: false });
+    // 隨分數提高難度
+    let spawnRate = Math.max(300, 600 - Math.floor(score / 1000) * 50);
+    setTimeout(spawnNote, spawnRate + Math.random() * 300);
+}
+
+function update() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (gameState === 'START') {
+        drawText("8-BIT RHYTHM", 180, 36, "#ffcc00", true);
+        drawText("點擊畫面開始遊戲", 300, 22, "#fff");
+        drawText("CLICK TO START", 335, 18, "#aaa");
+        drawText("Keys: D F J K", 450, 20, "#00ff00");
+    } 
+    
+    else if (gameState === 'PLAYING') {
+        // 繪製軌道
+        lanes.forEach((x, i) => {
+            ctx.strokeStyle = activeLanes[i] ? '#444' : '#222';
+            ctx.lineWidth = activeLanes[i] ? 4 : 2;
+            ctx.beginPath();
+            ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+            if(activeLanes[i]) { // 按鍵按下時的軌道發光
+                ctx.fillStyle = 'rgba(255,255,255,0.05)';
+                ctx.fillRect(x - 45, 0, 90, canvas.height);
+            }
+        });
+
+        // 判定線
+        ctx.fillStyle = '#555';
+        ctx.fillRect(0, TARGET_Y - 2, canvas.width, 4);
+
+        // 音符更新
+        for (let i = notes.length - 1; i >= 0; i--) {
+            let n = notes[i];
+            n.y += NOTE_SPEED;
+
+            // 繪製像素音符
+            ctx.fillStyle = '#00ff00';
+            ctx.fillRect(lanes[n.lane] - 30, n.y, 60, 20);
+            ctx.strokeStyle = '#fff';
+            ctx.strokeRect(lanes[n.lane] - 30, n.y, 60, 20);
+
+            // 漏接判定
+            if (n.y > TARGET_Y + JUDGEMENT.GOOD.range) {
+                effects.push({ x: lanes[n.lane], y: TARGET_Y, text: "MISS", color: "#ff0000", life: 25 });
+                totalHits.MISS++;
+                notes.splice(i, 1);
+                play8BitNote(150, 0.1, 'sawtooth');
+            }
+        }
+    } 
+    
+    else if (gameState === 'RESULT') {
+        drawText("遊戲結束 / GAME OVER", 120, 26, "#ffcc00");
+        
+        let statsY = 220;
+        Object.keys(JUDGEMENT).forEach(key => {
+            if(key === 'MISS' || JUDGEMENT[key].text) {
+                let count = totalHits[key === 'MISS' ? 'MISS' : JUDGEMENT[key].text];
+                drawText(`${key}: ${count}`, statsY, 22, key === 'MISS' ? '#ff0000' : JUDGEMENT[key].color);
+                statsY += 40;
+            }
+        });
+        
+        drawText("最終得分 FINAL SCORE: " + score, 420, 24, "#00ff00");
+        drawText("點擊重玩 CLICK TO REPLAY", 520, 20, "#fff");
+    }
+
+    // 文字特效更新
+    for (let i = effects.length - 1; i >= 0; i--) {
+        let eff = effects[i];
+        ctx.fillStyle = eff.color;
+        ctx.font = "bold 20px 'Courier New'";
+        ctx.textAlign = "center";
+        ctx.fillText(eff.text, eff.x, eff.y);
+        eff.y -= 1.5;
+        eff.life--;
+        if (eff.life <= 0) effects.splice(i, 1);
+    }
+
+    requestAnimationFrame(update);
+}
+
+/**
+ * 互動邏輯
+ */
+canvas.addEventListener('mousedown', () => {
+    if (gameState === 'START' || gameState === 'RESULT') {
+        gameState = 'PLAYING';
+        score = 0; notes = []; effects = [];
+        totalHits = { PERFECT: 0, GREAT: 0, GOOD: 0, MISS: 0 };
+        scoreElement.innerText = `SCORE: 0`;
+        play8BitNote(523, 0.1);
+        spawnNote();
+        // 預設 60 秒一局
+        setTimeout(() => { if(gameState === 'PLAYING') gameState = 'RESULT'; }, 60000);
+    }
+});
+
+window.addEventListener('keydown', (e) => {
+    if (gameState !== 'PLAYING') return;
+    const keyIndex = keys.indexOf(e.key.toLowerCase());
+    if (keyIndex === -1) return;
+
+    activeLanes[keyIndex] = true; // 啟動軌道發光
+
+    let hitIdx = -1;
+    let minDiff = Infinity;
+
+    for (let i = 0; i < notes.length; i++) {
+        let n = notes[i];
+        if (n.lane === keyIndex) {
+            let diff = Math.abs((n.y + 10) - TARGET_Y);
+            if (diff < JUDGEMENT.GOOD.range && diff < minDiff) {
+                minDiff = diff;
+                hitIdx = i;
+            }
+        }
+    }
+
+    if (hitIdx !== -1) {
+        let n = notes[hitIdx];
+        let res = minDiff <= JUDGEMENT.PERFECT.range ? JUDGEMENT.PERFECT : 
+                  minDiff <= JUDGEMENT.GREAT.range ? JUDGEMENT.GREAT : JUDGEMENT.GOOD;
+        
+        score += res.score;
+        totalHits[res.text]++;
+        scoreElement.innerText = `SCORE: ${score}`;
+        effects.push({ x: lanes[n.lane], y: TARGET_Y - 30, text: res.text, color: res.color, life: 30 });
+        
+        // 根據準確度播放不同音調
+        let pitch = res.text === 'PERFECT' ? 1200 : (res.text === 'GREAT' ? 900 : 600);
+        play8BitNote(pitch, 0.05);
+        notes.splice(hitIdx, 1);
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    const keyIndex = keys.indexOf(e.key.toLowerCase());
+    if (keyIndex !== -1) activeLanes[keyIndex] = false; // 關閉軌道發光
+});
+
+// 啟動遊戲
+update();
+</script>
+</body>
+</html>
